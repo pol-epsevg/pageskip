@@ -1,10 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import re
 from urllib.parse import parse_qsl
 
 import scrapy
 from scrapy.http import FormRequest
+import trafilatura
 
 from playwright.sync_api import sync_playwright
+
 
 LOGIN_URL = "https://gn6.upc.edu/epsevg/serveis"
 TICKET_WEBSITE_URL = "https://gn6.upc.edu/tiquets/control/**"
@@ -73,8 +77,60 @@ class Pageskip(scrapy.Spider):
                 meta={'cookiejar': 1}
             )
 
+    def parse_header(self, response):
+        # Ticket headers look like this:
+        # `0000001 - Ticket title | Requesting person | Creat: 01-01-2026 08:00`
+        header_div = response.xpath(
+            '//div[contains(@class, "tabletextTiquet")]')
+
+        # `0000001 - Ticket title`
+        subject = header_div.xpath('./a/text()').get(default='').strip()
+        subject_match = re.split(r'\s+-\s+', subject, maxsplit=1)
+
+        # `| Requesting person | Creat: 01-01-2026 08:00`
+        header_text = " ".join(header_div.xpath('./text()').getall())
+        date_match = re.search(r'Creat:\s*([\d-]{10}\s[\d:]{5})', header_text)
+
+        ticket_number = None
+        if len(subject_match) == 2:
+            # `0000001`
+            ticket_number = subject_match[0].strip()
+
+            # `Ticket title`
+            subject = subject_match[1].strip()
+
+        if date_match:
+            # `01-01-2026 08:00`
+            parsed_date = datetime.strptime(
+                date_match.group(1), "%d-%m-%Y %H:%M")
+            creation_date = parsed_date.isoformat()
+        else:
+            creation_date = None
+
+        return (subject, ticket_number, creation_date)
+
     def parse_ticket(self, response):
+        (subject, ticket_number, creation_date) = parse_header(response)
+
+        description_html = response.xpath(
+            '//div[@class="caixa"][.//div[@class="Titol" and normalize-space(text())="Descripció"]]//div[contains(@class, "consultafck")]').getall()
+        description_html = "".join(description_html)
+
+        comments_html = "".join(response.xpath(
+            '//div[contains(@class, "Comentari")]').getall())
+
+        html = f"<html><body><main><article>{description_html}{comments_html}</article></main></body></html>"
+
+        extracted_text = trafilatura.extract(
+            html,
+            include_comments=True,
+            no_fallback=False
+        )
+
         yield {
             'url': response.url,
-            'html_content': response.text
+            'number': ticket_number,
+            'subject': subject,
+            'creation_date': creation_date,
+            'text': extracted_text,
         }

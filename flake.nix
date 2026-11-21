@@ -19,6 +19,7 @@
           playwright
           requests
           scrapy
+          trafilatura
         ]);
       in
       {
